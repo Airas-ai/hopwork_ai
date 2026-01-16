@@ -4,9 +4,11 @@ FastAPI backend for evaluating resumes and providing ATS (Applicant Tracking Sys
 
 ## Features
 
-- Resume file upload (PDF, DOCX, DOC)
+- Resume file processing from URLs (PDF, DOCX, DOC)
 - Text extraction from multiple file formats
 - ATS score evaluation using Gemini Pro
+- Customized cover letter generation
+- ATS-optimized resume regeneration
 - Detailed feedback, strengths, weaknesses, and recommendations
 
 ## Setup
@@ -65,12 +67,19 @@ Once the server is running, visit:
 
 ### POST /resume_ats_score
 
-Evaluate a resume file and return ATS compatibility score.
+Evaluate a resume file from URL and return ATS compatibility score.
 
 **Request:**
 - Method: POST
-- Content-Type: multipart/form-data
-- Body: Form data with `file` field containing the resume file
+- Content-Type: application/json
+- Body: JSON with `resume_url` field containing the URL to the resume file
+
+**Request Body:**
+```json
+{
+  "resume_url": "https://hopwork-bucket.s3.us-east-1.amazonaws.com/uploads/resume.pdf"
+}
+```
 
 **Response:**
 ```json
@@ -88,20 +97,26 @@ Evaluate a resume file and return ATS compatibility score.
 ```bash
 curl -X POST "http://localhost:8000/resume_ats_score" \
   -H "accept: application/json" \
-  -H "Content-Type: multipart/form-data" \
-  -F "file=@/path/to/resume.pdf"
+  -H "Content-Type: application/json" \
+  -d '{"resume_url": "https://hopwork-bucket.s3.us-east-1.amazonaws.com/uploads/resume.pdf"}'
 ```
 
 ### POST /cover_letter_generator
 
-Generate a customized cover letter based on a job description and a resume file.
+Generate a customized cover letter based on a job description and a resume file from URL.
 
 **Request:**
 - Method: POST
-- Content-Type: multipart/form-data
-- Body:
-  - `job_description` (form field, string): Full job description text
-  - `file` (file field): Resume file (`.pdf`, `.docx`, `.doc`)
+- Content-Type: application/json
+- Body: JSON with `resume_url` and `job_description` fields
+
+**Request Body:**
+```json
+{
+  "resume_url": "https://hopwork-bucket.s3.us-east-1.amazonaws.com/uploads/resume.pdf",
+  "job_description": "We are looking for a Senior Software Engineer with experience in..."
+}
+```
 
 **Response:**
 ```json
@@ -118,9 +133,44 @@ Generate a customized cover letter based on a job description and a resume file.
 ```bash
 curl -X POST "http://localhost:8000/cover_letter_generator" \
   -H "accept: application/json" \
-  -H "Content-Type: multipart/form-data" \
-  -F "job_description=We are looking for a Senior Software Engineer..." \
-  -F "file=@/path/to/resume.pdf"
+  -H "Content-Type: application/json" \
+  -d '{
+    "resume_url": "https://hopwork-bucket.s3.us-east-1.amazonaws.com/uploads/resume.pdf",
+    "job_description": "We are looking for a Senior Software Engineer..."
+  }'
+```
+
+### POST /ats_resume_generator
+
+Regenerate a resume from URL to be ATS-friendly and better structured.
+
+**Request:**
+- Method: POST
+- Content-Type: application/json
+- Body: JSON with `resume_url` field
+
+**Request Body:**
+```json
+{
+  "resume_url": "https://hopwork-bucket.s3.us-east-1.amazonaws.com/uploads/resume.pdf"
+}
+```
+
+**Response:**
+```json
+{
+  "regenerated_resume": "ATS-optimized resume content...",
+  "model_used": "gemini-2.5-pro",
+  "notes": "Improved formatting, structure, and keyword optimization."
+}
+```
+
+**Example using curl:**
+```bash
+curl -X POST "http://localhost:8000/ats_resume_generator" \
+  -H "accept: application/json" \
+  -H "Content-Type: application/json" \
+  -d '{"resume_url": "https://hopwork-bucket.s3.us-east-1.amazonaws.com/uploads/resume.pdf"}'
 ```
 
 ## Project Structure
@@ -132,11 +182,13 @@ hopwork_ai/
 │   ├── main.py              # FastAPI application
 │   ├── models/
 │   │   ├── __init__.py
-│   │   └── response_models.py  # Pydantic models
+│   │   ├── request_models.py   # Request Pydantic models
+│   │   └── response_models.py  # Response Pydantic models
 │   └── utils/
 │       ├── __init__.py
 │       ├── file_processor.py    # File processing utilities
-│       └── gemini_service.py    # Gemini Pro integration
+│       ├── gemini_service.py    # Gemini Pro integration
+│       └── url_downloader.py    # URL file download utilities
 ├── config.py                 # Configuration settings
 ├── requirements.txt          # Python dependencies
 ├── run.py                    # Application entry point
@@ -152,11 +204,13 @@ hopwork_ai/
 ## Error Handling
 
 The API includes comprehensive error handling for:
+- Invalid file URLs or unreachable URLs
 - Invalid file types
 - File size limits (10MB max)
 - Text extraction failures
 - Gemini API errors
 - Missing configuration
+- Network timeouts (30 seconds)
 
 ## License
 

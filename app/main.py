@@ -1,13 +1,16 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from app.models.response_models import ATSScoreResponse, CoverLetterResponse, ATSResumeResponse
+from app.models.request_models import ResumeURLRequest, CoverLetterRequest
 from app.utils.file_processor import FileProcessor
 from app.utils.gemini_service import GeminiService
+from app.utils.url_downloader import URLDownloader
 from config import settings
 
 # Initialize services
 file_processor = FileProcessor()
+url_downloader = URLDownloader()
 gemini_service = None
 
 
@@ -66,12 +69,12 @@ async def health_check():
 
 
 @app.post("/resume_ats_score", response_model=ATSScoreResponse)
-async def resume_ats_score(file: UploadFile = File(...)):
+async def resume_ats_score(request: ResumeURLRequest):
     """
-    Evaluate a resume file and return ATS compatibility score
+    Evaluate a resume file from URL and return ATS compatibility score
     
     Args:
-        file: Resume file (doc, docx, or pdf)
+        request: ResumeURLRequest with resume_url (URL to doc, docx, or pdf file)
         
     Returns:
         ATSScoreResponse with score, feedback, strengths, weaknesses, and recommendations
@@ -83,27 +86,13 @@ async def resume_ats_score(file: UploadFile = File(...)):
             detail="Gemini API is not configured. Please set GEMINI_API_KEY in environment variables."
         )
     
-    # Validate file extension
-    if not FileProcessor.is_valid_extension(file.filename):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid file type. Allowed types: {', '.join(FileProcessor.ALLOWED_EXTENSIONS)}"
-        )
-    
-    # Read file content
     try:
-        file_content = await file.read()
-        
-        # Validate file size
-        if len(file_content) > FileProcessor.MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=400,
-                detail=f"File size exceeds maximum allowed size of {FileProcessor.MAX_FILE_SIZE / (1024*1024)}MB"
-            )
+        # Download file from URL
+        file_content, filename = await url_downloader.download_file(str(request.resume_url))
         
         # Extract text from file
         try:
-            resume_text = FileProcessor.extract_text(file_content, file.filename)
+            resume_text = FileProcessor.extract_text(file_content, filename)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         
@@ -120,7 +109,7 @@ async def resume_ats_score(file: UploadFile = File(...)):
             raise HTTPException(status_code=500, detail=f"Error analyzing resume: {str(e)}")
         
         # Get file type
-        file_type = FileProcessor.get_file_type(file.filename)
+        file_type = FileProcessor.get_file_type(filename)
         
         # Return response
         return ATSScoreResponse(
@@ -134,6 +123,8 @@ async def resume_ats_score(file: UploadFile = File(...)):
         
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -142,16 +133,12 @@ async def resume_ats_score(file: UploadFile = File(...)):
 
 
 @app.post("/cover_letter_generator", response_model=CoverLetterResponse)
-async def cover_letter_generator(
-    job_description: str = Form(..., description="Job description text"),
-    file: UploadFile = File(..., description="Candidate resume file (pdf, doc, or docx)"),
-):
+async def cover_letter_generator(request: CoverLetterRequest):
     """
     Generate a customized cover letter based on job description and resume.
 
     Args:
-        job_description: Full job description in plain text.
-        file: Resume file (pdf, doc, or docx).
+        request: CoverLetterRequest with resume_url and job_description
 
     Returns:
         CoverLetterResponse with generated cover letter and metadata.
@@ -162,23 +149,13 @@ async def cover_letter_generator(
             detail="Gemini API is not configured. Please set GEMINI_API_KEY in environment variables.",
         )
 
-    if not FileProcessor.is_valid_extension(file.filename):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid file type. Allowed types: {', '.join(FileProcessor.ALLOWED_EXTENSIONS)}",
-        )
-
     try:
-        file_content = await file.read()
+        # Download file from URL
+        file_content, filename = await url_downloader.download_file(str(request.resume_url))
 
-        if len(file_content) > FileProcessor.MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=400,
-                detail=f"File size exceeds maximum allowed size of {FileProcessor.MAX_FILE_SIZE / (1024*1024)}MB",
-            )
-
+        # Extract text from file
         try:
-            resume_text = FileProcessor.extract_text(file_content, file.filename)
+            resume_text = FileProcessor.extract_text(file_content, filename)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
@@ -191,7 +168,7 @@ async def cover_letter_generator(
                 ),
             )
 
-        if not job_description or len(job_description.strip()) < 30:
+        if not request.job_description or len(request.job_description.strip()) < 30:
             raise HTTPException(
                 status_code=400,
                 detail="Job description is too short. Please provide a detailed job description.",
@@ -199,7 +176,7 @@ async def cover_letter_generator(
 
         try:
             result = gemini_service.generate_cover_letter(
-                resume_text=resume_text, job_description=job_description
+                resume_text=resume_text, job_description=request.job_description
             )
         except ValueError as e:
             raise HTTPException(status_code=500, detail=f"Error generating cover letter: {str(e)}")
@@ -214,6 +191,8 @@ async def cover_letter_generator(
 
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -222,14 +201,12 @@ async def cover_letter_generator(
 
 
 @app.post("/ats_resume_generator", response_model=ATSResumeResponse)
-async def ats_resume_generator(
-    file: UploadFile = File(..., description="Candidate resume file (pdf, doc, or docx)"),
-):
+async def ats_resume_generator(request: ResumeURLRequest):
     """
     Regenerate a resume to be ATS-friendly and better structured.
 
     Args:
-        file: Resume file (pdf, doc, or docx).
+        request: ResumeURLRequest with resume_url (URL to pdf, doc, or docx file)
 
     Returns:
         ATSResumeResponse with regenerated resume text and metadata.
@@ -240,23 +217,13 @@ async def ats_resume_generator(
             detail="Gemini API is not configured. Please set GEMINI_API_KEY in environment variables.",
         )
 
-    if not FileProcessor.is_valid_extension(file.filename):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid file type. Allowed types: {', '.join(FileProcessor.ALLOWED_EXTENSIONS)}",
-        )
-
     try:
-        file_content = await file.read()
+        # Download file from URL
+        file_content, filename = await url_downloader.download_file(str(request.resume_url))
 
-        if len(file_content) > FileProcessor.MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=400,
-                detail=f"File size exceeds maximum allowed size of {FileProcessor.MAX_FILE_SIZE / (1024*1024)}MB",
-            )
-
+        # Extract text from file
         try:
-            resume_text = FileProcessor.extract_text(file_content, file.filename)
+            resume_text = FileProcessor.extract_text(file_content, filename)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
@@ -282,6 +249,8 @@ async def ats_resume_generator(
 
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(
             status_code=500,
