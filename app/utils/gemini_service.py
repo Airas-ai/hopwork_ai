@@ -1,6 +1,7 @@
 import google.generativeai as genai
 import json
 import re
+import hashlib
 from typing import Dict, Any
 from config import settings
 
@@ -55,10 +56,28 @@ class GeminiService:
         # Initialize with first model name (will be tried during first API call)
         self.model = genai.GenerativeModel(self.model_names[0])
         self.current_model_index = 0
+        
+        # Cache for ATS scores - keyed by resume content hash
+        self.ats_score_cache: Dict[str, Dict[str, Any]] = {}
+    
+    def _get_resume_hash(self, resume_text: str) -> str:
+        """
+        Generate a hash for the resume text to use as cache key
+        
+        Args:
+            resume_text: Resume text content
+            
+        Returns:
+            SHA256 hash of the normalized resume text
+        """
+        # Normalize the text (strip whitespace, lowercase) for consistent hashing
+        normalized_text = resume_text.strip().lower()
+        return hashlib.sha256(normalized_text.encode('utf-8')).hexdigest()
     
     def analyze_resume_for_ats(self, resume_text: str) -> Dict[str, Any]:
         """
-        Analyze resume text and generate ATS score with detailed feedback
+        Analyze resume text and generate ATS score with detailed feedback.
+        Results are cached based on resume content hash to ensure consistent scores.
         
         Args:
             resume_text: Extracted text from resume file
@@ -66,6 +85,11 @@ class GeminiService:
         Returns:
             Dictionary containing score, feedback, strengths, weaknesses, and recommendations
         """
+        # Check cache first
+        resume_hash = self._get_resume_hash(resume_text)
+        if resume_hash in self.ats_score_cache:
+            return self.ats_score_cache[resume_hash]
+        
         prompt = f"""You are an expert ATS (Applicant Tracking System) resume analyzer. 
 Analyze the following resume and provide a comprehensive evaluation.
 
@@ -150,13 +174,18 @@ Respond ONLY with valid JSON, no additional text or markdown formatting."""
             score = float(result.get("score", 0))
             score = max(0, min(100, score))  # Clamp between 0-100
             
-            return {
+            analysis_result = {
                 "score": round(score, 2),
                 "feedback": result.get("feedback", "No feedback provided"),
                 "strengths": result.get("strengths", []),
                 "weaknesses": result.get("weaknesses", []),
                 "recommendations": result.get("recommendations", [])
             }
+            
+            # Cache the result
+            self.ats_score_cache[resume_hash] = analysis_result
+            
+            return analysis_result
             
         except json.JSONDecodeError as e:
             raise ValueError(f"Failed to parse Gemini response as JSON: {str(e)}")
